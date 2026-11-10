@@ -1,0 +1,87 @@
+// router.tp 的用例：模式匹配、参数提取、404 / 405 分派。
+//
+// 路由是全框架唯一「按字符串做决定」的地方，拼错了不会编译报错，只能靠用例钉住。
+
+import std.vec as vec;
+import std.vec.Vec;
+import http;
+import http.Request;
+import http.Response;
+import http.Header;
+import router;
+import router.Router;
+import text;
+import lib;
+import lib.Case;
+
+// 处理函数：把取到的参数写回 body，方便断言「值确实传到了处理函数里」。
+fn greet(request: &Request, response: &mut Response) {
+    let name: String = http.request_param(request, "name");
+    http.reply_plain(response, 200, "hello " + name);
+}
+
+fn other(request: &Request, response: &mut Response) {
+    http.reply_plain(response, 201, "other");
+}
+
+fn parse(raw: String): Request {
+    return unwrap(http.parse_head(raw));
+}
+
+fn main(): i32 {
+    let c: Case = lib.case();
+    let crlf: String = text.crlf();
+
+    // ---- 模式匹配 ----
+    let params: Vec<Header> = vec.new<Header>();
+    c = lib.expect_true(c, router.match_path("/hello/:name", "/hello/tap", &mut params),
+                        "静态段 + 参数段");
+    c = lib.expect_i32(c, params.len() as i32, 1, "提取到 1 个参数");
+    c = lib.expect_string(c, params.get(0).name, "name", "参数名");
+    c = lib.expect_string(c, params.get(0).value, "tap", "参数值");
+    vec.free(params);
+
+    let multi: Vec<Header> = vec.new<Header>();
+    c = lib.expect_true(c,
+        router.match_path("/users/:id/posts/:post", "/users/7/posts/9", &mut multi),
+        "两个参数段");
+    c = lib.expect_i32(c, multi.len() as i32, 2, "提取到 2 个参数");
+    c = lib.expect_string(c, multi.get(0).value, "7", "第一个参数值");
+    c = lib.expect_string(c, multi.get(1).value, "9", "第二个参数值");
+    vec.free(multi);
+
+    let none: Vec<Header> = vec.new<Header>();
+    c = lib.expect_true(c, !router.match_path("/hello/:name", "/hello", &mut none),
+                        "段数不同不匹配");
+    c = lib.expect_true(c, !router.match_path("/a", "/b", &mut none), "静态段不同不匹配");
+    c = lib.expect_true(c, !router.match_path("/a/b", "/a", &mut none), "路径更短不匹配");
+    c = lib.expect_true(c, !router.match_path("/a/", "/a", &mut none),
+                        "尾斜杠是区别（/a/ 与 /a 段数不同）");
+    c = lib.expect_true(c, router.match_path("/a/", "/a/", &mut none), "尾斜杠两边都有");
+    vec.free(none);
+
+    // ---- 分派 ----
+    let app: Router = router.new();
+    router.get(&mut app, "/hello/:name", &greet);
+    router.post(&mut app, "/other", &other);
+    c = lib.expect_i32(c, router.count(&app) as i32, 2, "注册了 2 条路由");
+
+    let hit: Request = parse("GET /hello/tap HTTP/1.1" + text.blank_line());
+    let ok: Response = http.new_response(200);
+    router.dispatch(&app, &mut hit, &mut ok);
+    c = lib.expect_i32(c, ok.status, 200, "命中路由的状态码");
+    c = lib.expect_string(c, ok.body, "hello tap", "命中路由的 body");
+
+    let wrong_method: Request = parse("POST /hello/tap HTTP/1.1" + text.blank_line());
+    let not_allowed: Response = http.new_response(200);
+    router.dispatch(&app, &mut wrong_method, &mut not_allowed);
+    c = lib.expect_i32(c, not_allowed.status, 405, "方法不匹配 → 405");
+    c = lib.expect_string(c, http.response_header(&not_allowed, "allow"), "GET", "405 带 Allow 头");
+
+    let missing: Request = parse("GET /nope HTTP/1.1" + crlf + "Host: x" + text.blank_line());
+    let not_found: Response = http.new_response(200);
+    router.dispatch(&app, &mut missing, &mut not_found);
+    c = lib.expect_i32(c, not_found.status, 404, "路径不匹配 → 404");
+
+    return lib.finish(c);
+}

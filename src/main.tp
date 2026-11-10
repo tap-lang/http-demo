@@ -1,0 +1,133 @@
+// http-demo：用 src/ 下四层（text / http / router / server）搭出来的小服务。
+//
+// 运行：
+//     tap build && ./build/http-demo           # Windows: build\http-demo.exe
+//     PORT=9000 ./build/http-demo
+//
+// 试几条：
+//     curl -i http://127.0.0.1:8080/
+//     curl -i http://127.0.0.1:8080/hello/%E4%BD%A0%E5%A5%BD
+//     curl -i http://127.0.0.1:8080/users/42
+//     curl -i 'http://127.0.0.1:8080/search?q=http%20server'
+//     curl -i -X POST --data 'ping' http://127.0.0.1:8080/echo
+//     curl -i -X DELETE http://127.0.0.1:8080/users/42
+//
+// 分层：text（字节工具）→ http（报文）→ router（路由）→ server（连接循环）。
+// 这个文件只负责「有哪些路由」和「每个路由干什么」。
+
+import std.env as env;
+import std.parse as parse;
+import std.json as json;
+import http;
+import http.Request;
+import http.Response;
+import router;
+import router.Router;
+import server;
+
+fn main(): i32 {
+    let app: Router = router.new();
+
+    router.get(&mut app, "/", &index);
+    router.get(&mut app, "/health", &health);
+    router.get(&mut app, "/hello/:name", &hello);
+    router.get(&mut app, "/users/:id", &show_user);
+    router.delete(&mut app, "/users/:id", &delete_user);
+    router.get(&mut app, "/search", &search);
+    router.post(&mut app, "/echo", &echo);
+    router.get(&mut app, "/old", &legacy_redirect);
+
+    let host: String = env.var("HOST");
+    if (host.len() == 0) {
+        host = "127.0.0.1";
+    }
+    let port: u16 = 8080;
+    let port_text: String = env.var("PORT");
+    if (port_text.len() > 0) {
+        let parsed: Result<i64, String> = parse.parse_i64(port_text);
+        if (!is_err(parsed)) {
+            let value: i64 = unwrap_or(parsed, 8080);
+            if (value > 0 && value < 65536) {
+                port = value as u16;
+            }
+        }
+    }
+
+    // keep-alive 默认关：单线程 + 阻塞读的模型下，一条空闲的复用连接会卡住整个服务
+    // （std.net 还没有超时和 poll）。本地压测时打开它才有意义。
+    let keep_alive: bool = env.var("KEEP_ALIVE") == "1";
+    return server.serve(host, port, app, keep_alive);
+}
+
+// 首页：把可用的端点列出来，省得开文档。
+fn index(request: &Request, response: &mut Response) {
+    let page: String = "<!doctype html><meta charset=\"utf-8\">"
+        + "<title>http-demo</title><h1>http-demo</h1><ul>"
+        + "<li><code>GET /</code> 这个页面</li>"
+        + "<li><code>GET /health</code> 健康检查</li>"
+        + "<li><code>GET /hello/:name</code> 打招呼，name 会做 URL 解码</li>"
+        + "<li><code>GET /users/:id</code> 一个假的用户</li>"
+        + "<li><code>DELETE /users/:id</code> 204</li>"
+        + "<li><code>GET /search?q=</code> 回显查询串</li>"
+        + "<li><code>POST /echo</code> 回显 body</li>"
+        + "<li><code>GET /old</code> 302 到 /</li>"
+        + "</ul>";
+    http.reply_html(response, 200, page);
+}
+
+fn health(request: &Request, response: &mut Response) {
+    let body: String = "{\"status\":\"ok\",\"routes\":8}";
+    http.reply_json(response, 200, body);
+}
+
+// 路径参数示例。中文名走 URL 编码传进来（%E4%BD%A0%E5%A5%BD），
+// http.parse_head 已经把它解码了。
+fn hello(request: &Request, response: &mut Response) {
+    let name: String = http.request_param(request, "name");
+    if (name.len() == 0) {
+        name = "world";
+    }
+    http.reply_plain(response, 200, "hello, " + name + "!\n");
+}
+
+// 同一个路径上的两种方法：GET 取数据，DELETE 删数据。
+fn show_user(request: &Request, response: &mut Response) {
+    let raw: String = http.request_param(request, "id");
+    let parsed: Result<i64, String> = parse.parse_i64(raw);
+    if (is_err(parsed)) {
+        http.reply_json(response, 400, "{\"error\":\"id must be a number\"}");
+        return;
+    }
+    let id: i64 = unwrap_or(parsed, 0);
+    let body: String = "{\"id\":" + parse.format_i64(id)
+        + ",\"name\":" + json.escape_quoted("user-" + parse.format_i64(id))
+        + ",\"active\":true}";
+    http.reply_json(response, 200, body);
+}
+
+fn delete_user(request: &Request, response: &mut Response) {
+    response.status = 204;
+}
+
+// query 参数示例：值里可能有 %20 / +，取出来已经是解码后的。
+fn search(request: &Request, response: &mut Response) {
+    let query: String = http.query_value(request, "q");
+    let body: String = "{\"query\":" + json.escape_quoted(query)
+        + ",\"length\":" + parse.format_i64(query.len() as i64) + "}";
+    http.reply_json(response, 200, body);
+}
+
+// POST body：Content-Length 由 http 层负责收齐，这里只管读。
+fn echo(request: &Request, response: &mut Response) {
+    let content_type: String = http.request_header(request, "content-type");
+    let body: String = "{\"method\":" + json.escape_quoted(request.method)
+        + ",\"path\":" + json.escape_quoted(request.path)
+        + ",\"content_type\":" + json.escape_quoted(content_type)
+        + ",\"body\":" + json.escape_quoted(request.body) + "}";
+    http.reply_json(response, 200, body);
+}
+
+fn legacy_redirect(request: &Request, response: &mut Response) {
+    response.status = 302;
+    http.set_header(response, "Location", "/");
+}

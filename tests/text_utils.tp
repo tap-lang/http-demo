@@ -1,0 +1,62 @@
+// text.tp 的用例：切分、裁剪、查找、URL 解码、大小写。
+//
+// 这些函数的边界条件比实现本身更容易错（空串、首尾分隔符、找不到），所以逐条钉住。
+
+import std.vec as vec;
+import std.vec.Vec;
+import lib;
+import lib.Case;
+import text;
+
+fn main(): i32 {
+    let c: Case = lib.case();
+
+    // ---- split：保留空段 ----
+    let parts: Vec<String> = text.split("/a/b/", 47);
+    c = lib.expect_i32(c, parts.len() as i32, 4, "split(\"/a/b/\") 段数");
+    c = lib.expect_string(c, parts.get(0), "", "split 首段（前导斜杠产生的空串）");
+    c = lib.expect_string(c, parts.get(1), "a", "split 第二段");
+    c = lib.expect_string(c, parts.get(3), "", "split 末段（尾随斜杠产生的空串）");
+    vec.free(parts);
+
+    let empty_parts: Vec<String> = text.split("", 47);
+    c = lib.expect_i32(c, empty_parts.len() as i32, 1, "空串切成 1 段");
+    c = lib.expect_string(c, empty_parts.get(0), "", "空串的唯一一段是空串");
+    vec.free(empty_parts);
+
+    // ---- split_words：丢空段 ----
+    let words: Vec<String> = text.split_words("GET   /a  HTTP/1.1 ");
+    c = lib.expect_i32(c, words.len() as i32, 3, "split_words 段数");
+    c = lib.expect_string(c, words.get(2), "HTTP/1.1", "split_words 末词");
+    vec.free(words);
+
+    // ---- find ----
+    c = lib.expect_i32(c, text.find("abcabc", "abc", 0) as i32, 0, "find 从头");
+    c = lib.expect_i32(c, text.find("abcabc", "abc", 1) as i32, 3, "find 从 1 开始");
+    c = lib.expect_i32(c, text.find("abc", "z", 0) as i32, -1, "find 找不到");
+    c = lib.expect_i32(c, text.find("ab", "abc", 0) as i32, -1, "find 模式比串长");
+    c = lib.expect_i32(c, text.find("a" + text.blank_line(), text.blank_line(), 0) as i32, 1,
+                       "find 空行标记");
+
+    // ---- trim ----
+    c = lib.expect_string(c, text.trim("  a b  "), "a b", "trim 两侧空格");
+    c = lib.expect_string(c, text.trim("\t" + text.crlf() + " a " + text.crlf()), "a",
+                         "trim 制表符与 CRLF");
+    c = lib.expect_string(c, text.trim("   "), "", "trim 全空白");
+
+    // ---- 大小写 ----
+    c = lib.expect_string(c, text.to_lower("Content-Length"), "content-length", "to_lower");
+    c = lib.expect_true(c, text.equals_ignore_case("Content-Length", "content-length"),
+                        "头名比较忽略大小写");
+    c = lib.expect_true(c, !text.equals_ignore_case("GET", "POST"), "不同方法不相等");
+    c = lib.expect_true(c, !text.equals_ignore_case("GET", "getx"), "长度不同不相等");
+
+    // ---- URL 解码 ----
+    c = lib.expect_string(c, text.decode("a%20b"), "a b", "decode %20");
+    c = lib.expect_string(c, text.decode("a+b"), "a b", "decode '+'");
+    c = lib.expect_string(c, text.decode("%E4%BD%A0%E5%A5%BD"), "你好", "decode 中文 UTF-8");
+    c = lib.expect_string(c, text.decode("100%"), "100%", "decode 孤立 % 原样保留");
+    c = lib.expect_string(c, text.decode("%zz"), "%zz", "decode 坏转义原样保留");
+
+    return lib.finish(c);
+}

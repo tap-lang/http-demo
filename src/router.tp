@@ -1,0 +1,146 @@
+// 路由表：方法 + 路径模式 → 处理函数。
+//
+// 模式里以 ':' 开头的段是参数（`/users/:id`），其余段逐字节比对；段数必须相等，
+// 所以 `/a` 和 `/a/b` 不会互相匹配。匹配成功时把参数塞进 request.params。
+//
+// 处理函数用**函数指针**而不是字符串名字：tap 支持 `*fn(...)`，`&handler` 就能拿到
+// 地址，签名在编译期就校验 —— 用名字查表的话，拼错了要等运行期才发现。
+
+import std.vec as vec;
+import std.vec.Vec;
+import std.string_builder as sb;
+import std.string_builder.StringBuilder;
+import http;
+import http.Request;
+import http.Response;
+import http.Header;
+import text;
+
+// 处理函数：读请求、写响应。没有返回值 —— 状态码和 body 都在 response 里。
+pub struct Route {
+    method: String,
+    pattern: String,
+    handler: *fn(&Request, &mut Response),
+}
+
+pub struct Router {
+    routes: Vec<Route>,
+}
+
+pub fn new(): Router {
+    let routes: Vec<Route> = vec.new<Route>();
+    return Router { routes: routes };
+}
+
+// 注册一条路由。method 传 "*" 表示任意方法。
+pub fn add(app: &mut Router, method: String, pattern: String,
+           handler: *fn(&Request, &mut Response)) {
+    let routes: Vec<Route> = app.routes;
+    routes.push(Route { method: method, pattern: pattern, handler: handler });
+    app.routes = routes;
+}
+
+pub fn get(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
+    add(app, "GET", pattern, handler);
+}
+
+pub fn post(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
+    add(app, "POST", pattern, handler);
+}
+
+pub fn put(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
+    add(app, "PUT", pattern, handler);
+}
+
+pub fn delete(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
+    add(app, "DELETE", pattern, handler);
+}
+
+// 注册了多少条路由。
+pub fn count(app: &Router): uint {
+    let routes: Vec<Route> = app.routes;
+    return routes.len();
+}
+
+// 找出第一条匹配的路由并调用处理函数；都不匹配时写 404 / 405。
+//
+// 405 只在「路径能匹配、方法不行」时给出，并带上 Allow 头 —— 这是 RFC 7231 的要求，
+// 也让调用方能一眼看出是拼错了方法还是拼错了路径。
+pub fn dispatch(app: &Router, request: &mut Request, response: &mut Response) {
+    let routes: Vec<Route> = app.routes;
+    let path_matched: bool = false;
+    let allowed: Vec<String> = vec.new<String>();
+
+    for (let i: uint = 0; i < routes.len(); i = i + 1) {
+        let route: Route = routes.get(i);
+        let params: Vec<Header> = vec.new<Header>();
+        if (!match_path(route.pattern, request.path, &mut params)) {
+            vec.free(params);
+            continue;
+        }
+        if (route.method != "*" && !text.equals_ignore_case(route.method, request.method)) {
+            path_matched = true;
+            allowed.push(route.method);
+            vec.free(params);
+            continue;
+        }
+
+        request.params = params;
+        let handler: *fn(&Request, &mut Response) = route.handler;
+        handler(request, response);
+        vec.free(allowed);
+        return;
+    }
+
+    if (path_matched) {
+        let allow: String = join(allowed);
+        response.status = 405;
+        response.body = "405 Method Not Allowed\n";
+        http.set_header(response, "Allow", allow);
+        http.set_header(response, "Content-Type", "text/plain; charset=utf-8");
+    } else {
+        response.status = 404;
+        response.body = "404 Not Found\n";
+        http.set_header(response, "Content-Type", "text/plain; charset=utf-8");
+    }
+    vec.free(allowed);
+}
+
+// 模式与路径是否匹配；匹配时把 `:name` 的实参推进 params。
+pub fn match_path(pattern: String, path: String, params: &mut Vec<Header>): bool {
+    let pattern_parts: Vec<String> = text.split(pattern, 47);      // '/'
+    let path_parts: Vec<String> = text.split(path, 47);
+    if (pattern_parts.len() != path_parts.len()) {
+        vec.free(pattern_parts);
+        vec.free(path_parts);
+        return false;
+    }
+
+    let matched: bool = true;
+    for (let i: uint = 0; i < pattern_parts.len(); i = i + 1) {
+        let expected: String = pattern_parts.get(i);
+        let actual: String = path_parts.get(i);
+        if (expected.len() > 1 && expected.byte_at(0) == 58) {      // ":name"
+            vec.push(params, Header { name: expected.slice(1, expected.len()), value: actual });
+        } else if (expected != actual) {
+            matched = false;
+            break;
+        }
+    }
+    vec.free(pattern_parts);
+    vec.free(path_parts);
+    return matched;
+}
+
+fn join(values: Vec<String>): String {
+    let builder: StringBuilder = sb.new();
+    for (let i: uint = 0; i < values.len(); i = i + 1) {
+        if (i > 0) {
+            builder.append(", ");
+        }
+        builder.append(values.get(i));
+    }
+    let text_value: String = builder.to_string();
+    builder.free();
+    return text_value;
+}

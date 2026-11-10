@@ -1,0 +1,202 @@
+// HTTP 报文解析要用的字节级字符串工具。
+//
+// std 的 String 自带 len / byte_at / slice / contains / starts_with / ends_with /
+// replace / char_count，但缺 split / trim / index_of / 大小写不敏感比较，而 HTTP
+// 报文全是 ASCII 分隔符，所以这里补齐。全部按 UTF-8 字节处理 —— 中文只会出现在
+// body 里，不参与切分，切在 ASCII 边界上是安全的。
+
+import std.vec as vec;
+import std.vec.Vec;
+import std.string_builder as sb;
+import std.string_builder.StringBuilder;
+
+// 空格、\t、\r、\n。HTTP 头部的行尾和多余空白都靠它清掉。
+fn is_blank(byte: u8): bool {
+    return byte == 32 || byte == 9 || byte == 13 || byte == 10;
+}
+
+// 一个 CRLF（字节 13、10）。
+//
+// 为什么不是字面量 "\r\n"：tap 的字符串转义目前只认 \n \t \\ \"，`\r` 会被解析成
+// 字面的 'r' 而且**不报错**（实测 "\r\n" 是 [114, 10]）。HTTP 必须发真正的 CRLF，
+// 所以只能拿 append_byte 造出来。
+pub fn crlf(): String {
+    let builder: StringBuilder = sb.new();
+    builder.append_byte(13);
+    builder.append_byte(10);
+    let out: String = builder.to_string();
+    builder.free();
+    return out;
+}
+
+// 空行 —— HTTP 头部与 body 的分隔标记（CRLFCRLF）。
+pub fn blank_line(): String {
+    let builder: StringBuilder = sb.new();
+    builder.append_byte(13);
+    builder.append_byte(10);
+    builder.append_byte(13);
+    builder.append_byte(10);
+    let out: String = builder.to_string();
+    builder.free();
+    return out;
+}
+
+// 单字节分隔符切分，**保留空段**：`/a/b/` 按 '/' 切是 ["", "a", "b", ""]。
+// 路由匹配要靠这一点区分 `/a` 和 `/a/`，所以不能像 Python 那样把空段丢掉。
+pub fn split(value: String, separator: u8): Vec<String> {
+    let parts: Vec<String> = vec.new<String>();
+    let start: uint = 0;
+    let index: uint = 0;
+    while (index < value.len()) {
+        if (value.byte_at(index) == separator) {
+            parts.push(value.slice(start, index));
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    parts.push(value.slice(start, value.len()));
+    return parts;
+}
+
+// 按空白切分，**丢掉空段**：`GET   /a  HTTP/1.1` 也能切干净。
+pub fn split_words(value: String): Vec<String> {
+    let parts: Vec<String> = vec.new<String>();
+    let start: uint = 0;
+    let index: uint = 0;
+    while (index < value.len()) {
+        if (is_blank(value.byte_at(index))) {
+            if (index > start) {
+                parts.push(value.slice(start, index));
+            }
+            start = index + 1;
+        }
+        index = index + 1;
+    }
+    if (value.len() > start) {
+        parts.push(value.slice(start, value.len()));
+    }
+    return parts;
+}
+
+// 从 from 开始找 needle，返回字节下标；找不到返回 -1。
+//
+// `\r\n\r\n` 这种多字节分隔符只能自己扫 —— tap 的 String 没有 index_of。
+pub fn find(value: String, needle: String, from: uint): i64 {
+    if (needle.len() == 0) {
+        return from as i64;
+    }
+    if (from >= value.len() || needle.len() > value.len() - from) {
+        return -1;
+    }
+    let index: uint = from;
+    while (index + needle.len() <= value.len()) {
+        if (value.slice(index, index + needle.len()) == needle) {
+            return index as i64;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+// 去掉首尾空白（空格、\t、\r、\n）。
+pub fn trim(value: String): String {
+    let start: uint = 0;
+    let end: uint = value.len();
+    while (start < end && is_blank(value.byte_at(start))) {
+        start = start + 1;
+    }
+    while (end > start && is_blank(value.byte_at(end - 1))) {
+        end = end - 1;
+    }
+    return value.slice(start, end);
+}
+
+// ASCII 小写化。HTTP 的方法名和头名都是 ASCII，够用；非 ASCII 字节原样保留。
+pub fn to_lower(value: String): String {
+    let builder: StringBuilder = sb.new();
+    let index: uint = 0;
+    while (index < value.len()) {
+        let byte: u8 = value.byte_at(index);
+        if (byte >= 65 && byte <= 90) {          // 'A'..'Z'
+            builder.append_byte(byte + 32);
+        } else {
+            builder.append_byte(byte);
+        }
+        index = index + 1;
+    }
+    let text: String = builder.to_string();
+    builder.free();
+    return text;
+}
+
+// 大小写不敏感比较。头名（Content-Length / content-length）和 HTTP 方法都要用它。
+pub fn equals_ignore_case(left: String, right: String): bool {
+    if (left.len() != right.len()) {
+        return false;
+    }
+    let index: uint = 0;
+    while (index < left.len()) {
+        let a: u8 = left.byte_at(index);
+        let b: u8 = right.byte_at(index);
+        if (a != b) {
+            let lower_a: u8 = a;
+            let lower_b: u8 = b;
+            if (a >= 65 && a <= 90) {
+                lower_a = a + 32;
+            }
+            if (b >= 65 && b <= 90) {
+                lower_b = b + 32;
+            }
+            if (lower_a != lower_b) {
+                return false;
+            }
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+// 一个十六进制字符的数值；不是十六进制返回 -1。
+fn hex_value(byte: u8): i32 {
+    if (byte >= 48 && byte <= 57) {
+        return byte - 48;                        // '0'..'9'
+    }
+    if (byte >= 65 && byte <= 70) {
+        return byte - 55;                        // 'A'..'F' → 10..15
+    }
+    if (byte >= 97 && byte <= 102) {
+        return byte - 87;                        // 'a'..'f'
+    }
+    return -1;
+}
+
+// URL 解码：`%XX` 还原成字节，`+` 还原成空格。
+//
+// 故意容忍坏转义（原样保留 `%`）：一个手写的 URL 里有孤立的 `%` 不该让整个请求 400。
+pub fn decode(value: String): String {
+    let builder: StringBuilder = sb.new();
+    let index: uint = 0;
+    while (index < value.len()) {
+        let byte: u8 = value.byte_at(index);
+        if (byte == 37 && index + 2 < value.len()) {          // '%'
+            let high: i32 = hex_value(value.byte_at(index + 1));
+            let low: i32 = hex_value(value.byte_at(index + 2));
+            if (high >= 0 && low >= 0) {
+                builder.append_byte((high * 16 + low) as u8);
+                index = index + 3;
+            } else {
+                builder.append_byte(byte);
+                index = index + 1;
+            }
+        } else if (byte == 43) {                              // '+'
+            builder.append_byte(32);
+            index = index + 1;
+        } else {
+            builder.append_byte(byte);
+            index = index + 1;
+        }
+    }
+    let text: String = builder.to_string();
+    builder.free();
+    return text;
+}

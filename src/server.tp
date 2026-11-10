@@ -1,0 +1,86 @@
+// 监听 + 连接循环：把 http 的报文层和 router 的路由表串起来。
+//
+// 单线程、一个连接一个连接地处理。这是最简单的形态，也是「简单框架」该有的形态：
+// 真要做并发，缺的是非阻塞 IO 和事件循环，不是在这里堆线程。
+
+import std.net as net;
+import std.net.Socket;
+import std.io as io;
+import http;
+import http.Request;
+import http.Response;
+import http.Connection;
+import http.ReadOutcome;
+import router;
+import router.Router;
+
+// 监听 host:port，永不返回（Ctrl-C 结束进程）。
+//
+// `keep_alive` 决定一条连接上跑几个请求。默认 false —— 原因见下面的 handle()。
+//
+// 失败只发生在 listen 这一步（端口被占用、地址不合法），之后 accept 失败只是跳过
+// 这一轮 —— 一个连接建不起来不该把整个服务带走。
+pub fn serve(host: String, port: u16, app: Router, keep_alive: bool): i32 {
+    let listening: Result<Socket, String> = net.listen_on(host, port, 64);
+    if (is_err(listening)) {
+        io.eprintf("http: cannot listen on %s:%d: %s\n",
+                   host, port as i32, http.error_text(listening));
+        return 1;
+    }
+    let server: Socket = unwrap(listening);
+    let actual: u16 = net.local_port(server);
+    // 日志一律走 stderr：stdout 是块缓冲的，重定向到文件或管道时要等缓冲区满才看得到，
+    // 服务跑起来半天没输出会让人以为卡死了。stderr 按 C 标准默认不带全缓冲。
+    io.eprintf("listening on http://%s:%d/  (%llu routes, keep-alive=%d, Ctrl-C to stop)\n",
+               host, actual as i32, router.count(&app), keep_alive);
+
+    while (true) {
+        let accepted: Result<Socket, String> = net.accept_from(server);
+        if (is_err(accepted)) {
+            io.eprintf("http: accept failed: %s\n", http.error_text(accepted));
+            continue;
+        }
+        let client: Socket = unwrap(accepted);
+        handle(client, &app, keep_alive);
+    }
+    return 0;
+}
+
+// 处理一条连接：默认只跑一个请求，`allow_keep_alive` 打开后才复用连接。
+//
+// **默认关掉是有原因的**：std.net 目前没有超时也没有 poll，read 是纯阻塞的。
+// 单线程 + 阻塞读意味着「一条活着但没在发请求的连接会把整个服务锁死」——
+// 浏览器这类客户端最喜欢开一条连接放着不发，后面所有人就都排队了。
+// 要做成真正的 keep-alive，得先给 std.net 加 SO_RCVTIMEO 或非阻塞 + 事件循环。
+fn handle(client: Socket, app: &Router, allow_keep_alive: bool) {
+    let conn: Connection = http.connect(client);
+    let open: bool = true;
+
+    while (open) {
+        let outcome: ReadOutcome = http.read_request(&mut conn);
+        match (outcome) {
+            ReadOutcome.Ready(incoming) => {
+                let request: Request = incoming;
+                let keep_alive: bool = allow_keep_alive && http.wants_keep_alive(&request);
+                let response: Response = http.new_response(200);
+
+                router.dispatch(app, &mut request, &mut response);
+
+                io.eprintf("%s %s -> %d\n", request.method, request.target, response.status);
+                http.send_response(&mut conn, &response, keep_alive);
+                open = keep_alive;
+            }
+            ReadOutcome.Closed => {
+                open = false;
+            }
+            ReadOutcome.Failed(reason) => {
+                // 报文本身坏了就没法继续复用连接：回一个 400 然后关掉。
+                io.eprintf("http: bad request: %s\n", reason);
+                let response: Response = http.plain(400, "400 Bad Request: " + reason + "\n");
+                http.send_response(&mut conn, &response, false);
+                open = false;
+            }
+        }
+    }
+    http.close(&mut conn);
+}
