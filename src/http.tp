@@ -273,15 +273,13 @@ pub fn status_text(status: i32): String {
 // Content-Length 一律由这里算，调用方不用（也不能）自己写：body 的长度是唯一的真相，
 // 让上层再填一遍只会写出人不一致的值。
 pub fn build_response(response: &Response, keep_alive: bool): String {
-    // CRLF 只能从字节造（见 text.crlf 的说明），一行一条省得每次重新分配。
-    let crlf: String = text.crlf();
-
+    // 每段之间都夹一个 CRLF，头部与 body 之间再补一个空行。
     let builder: StringBuilder = sb.new();
     builder.append("HTTP/1.1 ");
     builder.append(parse.format_i64(response.status as i64));
     builder.append(" ");
     builder.append(status_text(response.status));
-    builder.append(crlf);
+    builder.append("\r\n");
 
     let headers: Vec<Header> = response.headers;
     for (let i: uint = 0; i < headers.len(); i = i + 1) {
@@ -289,7 +287,7 @@ pub fn build_response(response: &Response, keep_alive: bool): String {
         builder.append(header.name);
         builder.append(": ");
         builder.append(header.value);
-        builder.append(crlf);
+        builder.append("\r\n");
     }
 
     // 204 / 304 不允许带 body，长度也就不能写 Content-Length（RFC 7230 §3.3.2）。
@@ -297,7 +295,7 @@ pub fn build_response(response: &Response, keep_alive: bool): String {
     if (!bodyless) {
         builder.append("Content-Length: ");
         builder.append(parse.format_i64(response.body.len() as i64));
-        builder.append(crlf);
+        builder.append("\r\n");
     }
     builder.append("Connection: ");
     if (keep_alive) {
@@ -305,8 +303,8 @@ pub fn build_response(response: &Response, keep_alive: bool): String {
     } else {
         builder.append("close");
     }
-    builder.append(crlf);
-    builder.append(crlf);
+    builder.append("\r\n");
+    builder.append("\r\n");
     if (!bodyless) {
         builder.append(response.body);
     }
@@ -348,7 +346,7 @@ fn read_chunk(socket: Socket): Result<String, String> {
 // 从 conn 里读一个完整请求。没有新请求时阻塞在 socket 上。
 pub fn read_request(conn: &mut Connection): ReadOutcome {
     // 1. 先把头部收齐（到空行为止）。
-    let terminator: String = text.blank_line();
+    let terminator: String = "\r\n\r\n";
     let head_end: i64 = text.find(conn.pending, terminator, 0);
     while (head_end < 0) {
         if (conn.pending.len() > MAX_HEADER_BYTES) {

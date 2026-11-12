@@ -30,7 +30,6 @@ fn parse(raw: String): Request {
 
 fn main(): i32 {
     let c: Case = lib.case();
-    let crlf: String = text.crlf();
 
     // ---- 模式匹配 ----
     let params: Vec<Header> = vec.new<Header>();
@@ -66,19 +65,19 @@ fn main(): i32 {
     router.post(&mut app, "/other", &other);
     c = lib.expect_i32(c, router.count(&app) as i32, 2, "注册了 2 条路由");
 
-    let hit: Request = parse("GET /hello/tap HTTP/1.1" + text.blank_line());
+    let hit: Request = parse("GET /hello/tap HTTP/1.1\r\n\r\n");
     let ok: Response = http.new_response(200);
     router.dispatch(&app, &mut hit, &mut ok);
     c = lib.expect_i32(c, ok.status, 200, "命中路由的状态码");
     c = lib.expect_string(c, ok.body, "hello tap", "命中路由的 body");
 
-    let wrong_method: Request = parse("POST /hello/tap HTTP/1.1" + text.blank_line());
+    let wrong_method: Request = parse("POST /hello/tap HTTP/1.1\r\n\r\n");
     let not_allowed: Response = http.new_response(200);
     router.dispatch(&app, &mut wrong_method, &mut not_allowed);
     c = lib.expect_i32(c, not_allowed.status, 405, "方法不匹配 → 405");
     c = lib.expect_string(c, http.response_header(&not_allowed, "allow"), "GET", "405 带 Allow 头");
 
-    let missing: Request = parse("GET /nope HTTP/1.1" + crlf + "Host: x" + text.blank_line());
+    let missing: Request = parse("GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
     let not_found: Response = http.new_response(200);
     router.dispatch(&app, &mut missing, &mut not_found);
     c = lib.expect_i32(c, not_found.status, 404, "路径不匹配 → 404");

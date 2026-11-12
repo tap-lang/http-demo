@@ -96,8 +96,5 @@ tapm test        # 或 TAPM=/path/to/tapm TAP=/path/to/tap tapm test
   `KEEP_ALIVE=1` 启动，代价是并发客户端会互相排队。
 - **没有并发**。一次处理一个连接，慢请求会挡住后面所有人。要做并发得先给 `std.net`
   加非阻塞 + 事件循环，不是在这里堆线程。
-- **`\r` 不能写成字符串转义**。tap 的字符串字面量只认 `\n` `\t` `\\` `\"`，
-  `"\r\n"` 会被解析成 `r` + `\n`（**不报错**），所以 CRLF 只能由 `text.crlf()` 用
-  `append_byte(13)` 造出来。HTTP 全靠 CRLF 分帧，这一点必须记住。
 - **处理函数是函数指针，调用点只认标识符**。`route.handler(...)` 调不了，要先
   `let h: *fn(&Request, &mut Response) = route.handler; h(...)`。

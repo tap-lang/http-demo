@@ -15,32 +15,6 @@ fn is_blank(byte: u8): bool {
     return byte == 32 || byte == 9 || byte == 13 || byte == 10;
 }
 
-// 一个 CRLF（字节 13、10）。
-//
-// 为什么不是字面量 "\r\n"：tap 的字符串转义目前只认 \n \t \\ \"，`\r` 会被解析成
-// 字面的 'r' 而且**不报错**（实测 "\r\n" 是 [114, 10]）。HTTP 必须发真正的 CRLF，
-// 所以只能拿 append_byte 造出来。
-pub fn crlf(): String {
-    let builder: StringBuilder = sb.new();
-    builder.append_byte(13);
-    builder.append_byte(10);
-    let out: String = builder.to_string();
-    builder.free();
-    return out;
-}
-
-// 空行 —— HTTP 头部与 body 的分隔标记（CRLFCRLF）。
-pub fn blank_line(): String {
-    let builder: StringBuilder = sb.new();
-    builder.append_byte(13);
-    builder.append_byte(10);
-    builder.append_byte(13);
-    builder.append_byte(10);
-    let out: String = builder.to_string();
-    builder.free();
-    return out;
-}
-
 // 单字节分隔符切分，**保留空段**：`/a/b/` 按 '/' 切是 ["", "a", "b", ""]。
 // 路由匹配要靠这一点区分 `/a` 和 `/a/`，所以不能像 Python 那样把空段丢掉。
 pub fn split(value: String, separator: u8): Vec<String> {

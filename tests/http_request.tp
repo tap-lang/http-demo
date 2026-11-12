@@ -16,13 +16,12 @@ fn parse(raw: String): Request {
 
 fn main(): i32 {
     let c: Case = lib.case();
-    let crlf: String = text.crlf();
 
     // ---- 请求行 + 头部 ----
-    let raw: String = "POST /api/users?id=7 HTTP/1.1" + crlf
-        + "Host: example.com" + crlf
-        + "content-length: 11" + crlf
-        + "X-Trace: abc" + text.blank_line();
+    let raw: String = "POST /api/users?id=7 HTTP/1.1\r\n"
+        + "Host: example.com\r\n"
+        + "content-length: 11\r\n"
+        + "X-Trace: abc\r\n\r\n";
     let request: Request = parse(raw);
 
     c = lib.expect_string(c, request.method, "POST", "method");
@@ -40,22 +39,22 @@ fn main(): i32 {
     c = lib.expect_string(c, http.query_value(&request, "id"), "7", "query 取 id");
     c = lib.expect_string(c, http.query_value(&request, "nope"), "", "query 取不存在的键");
 
-    let encoded: Request = parse("GET /s?q=http%20server%2Bmore&empty= HTTP/1.1" + text.blank_line());
+    let encoded: Request = parse("GET /s?q=http%20server%2Bmore&empty= HTTP/1.1\r\n\r\n");
     c = lib.expect_string(c, http.query_value(&encoded, "q"), "http server+more", "query 值要解码");
     c = lib.expect_string(c, http.query_value(&encoded, "empty"), "", "query 空值");
 
     // ---- keep-alive 判定 ----
     c = lib.expect_true(c, http.wants_keep_alive(&request), "HTTP/1.1 默认复用");
-    let closing: Request = parse("GET / HTTP/1.1" + crlf + "Connection: close" + text.blank_line());
+    let closing: Request = parse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
     c = lib.expect_true(c, !http.wants_keep_alive(&closing), "Connection: close 覆盖默认值");
-    let old: Request = parse("GET / HTTP/1.0" + text.blank_line());
+    let old: Request = parse("GET / HTTP/1.0\r\n\r\n");
     c = lib.expect_true(c, !http.wants_keep_alive(&old), "HTTP/1.0 默认关闭");
-    let old_keep: Request = parse("GET / HTTP/1.0" + crlf + "Connection: keep-alive" + text.blank_line());
+    let old_keep: Request = parse("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
     c = lib.expect_true(c, http.wants_keep_alive(&old_keep), "HTTP/1.0 + keep-alive");
 
     // ---- 坏报文 ----
     c = lib.expect_true(c, is_err(http.parse_head("GET")), "缺少目标和版本");
-    c = lib.expect_true(c, is_err(http.parse_head("GET / HTTP/1.1" + crlf + "bad header" + text.blank_line())),
+    c = lib.expect_true(c, is_err(http.parse_head("GET / HTTP/1.1\r\nbad header\r\n\r\n")),
                         "头部没有冒号");
 
     // ---- 响应序列化 ----
@@ -64,8 +63,8 @@ fn main(): i32 {
     c = lib.expect_contains(c, wire, "HTTP/1.1 200 OK", "状态行");
     c = lib.expect_contains(c, wire, "Content-Length: 2", "Content-Length 由 body 算出");
     c = lib.expect_contains(c, wire, "Connection: close", "Connection");
-    c = lib.expect_contains(c, wire, text.blank_line() + "hi", "body 跟在空行后");
-    c = lib.expect_contains(c, wire, "Connection: close" + text.blank_line() + "hi", "头部与 body 的分界");
+    c = lib.expect_contains(c, wire, "\r\n\r\nhi", "body 跟在空行后");
+    c = lib.expect_contains(c, wire, "Connection: close\r\n\r\nhi", "头部与 body 的分界");
 
     // 204 不允许带 body，也不该写 Content-Length
     let no_content_response: Response = http.empty(204);

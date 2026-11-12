@@ -35,12 +35,12 @@ fn main(): i32 {
     c = lib.expect_i32(c, text.find("abcabc", "abc", 1) as i32, 3, "find 从 1 开始");
     c = lib.expect_i32(c, text.find("abc", "z", 0) as i32, -1, "find 找不到");
     c = lib.expect_i32(c, text.find("ab", "abc", 0) as i32, -1, "find 模式比串长");
-    c = lib.expect_i32(c, text.find("a" + text.blank_line(), text.blank_line(), 0) as i32, 1,
+    c = lib.expect_i32(c, text.find("a\r\n\r\n", "\r\n\r\n", 0) as i32, 1,
                        "find 空行标记");
 
     // ---- trim ----
     c = lib.expect_string(c, text.trim("  a b  "), "a b", "trim 两侧空格");
-    c = lib.expect_string(c, text.trim("\t" + text.crlf() + " a " + text.crlf()), "a",
+    c = lib.expect_string(c, text.trim("\t\r\n a \r\n"), "a",
                          "trim 制表符与 CRLF");
     c = lib.expect_string(c, text.trim("   "), "", "trim 全空白");
 
