@@ -1,6 +1,10 @@
 // http-demo 的断言库。每个断言把失败数累加在 Case 上，让一个用例能一次报多个问题。
 //
 // 用例本身是普通 tap 文件（有自己的 main，返回 0 表示通过），由 `tapm test` 跑。
+//
+// 断言都是 `&mut self` 方法：失败计数就地加在同一个 Case 上，所以调用点不用写
+// `c = lib.expect_x(c, ...)` 这种「传进去再拿回来」的写法。`case()` 没有接收者，
+// 只能是模块函数。
 
 pub struct Case {
     failures: i32,
@@ -10,48 +14,46 @@ pub fn case(): Case {
     return Case { failures: 0 };
 }
 
-pub fn fail(c: Case, message: String): Case {
-    print("    FAIL: %s\n", message);
-    c.failures = c.failures + 1;
-    return c;
-}
-
-pub fn expect_true(c: Case, actual: bool, label: String): Case {
-    if (!actual) {
-        return fail(c, label + "（期望 true，实际 false）");
+impl Case {
+    fn fail(&mut self, message: String) {
+        print("    FAIL: %s\n", message);
+        self.failures = self.failures + 1;
     }
-    return c;
-}
 
-pub fn expect_i32(c: Case, actual: i32, expected: i32, label: String): Case {
-    if (actual != expected) {
-        print("    FAIL: %s 期望 %d，实际 %d\n", label, expected, actual);
-        c.failures = c.failures + 1;
+    pub fn expect_true(&mut self, actual: bool, label: String) {
+        if (!actual) {
+            self.fail(label + "（期望 true，实际 false）");
+        }
     }
-    return c;
-}
 
-pub fn expect_string(c: Case, actual: String, expected: String, label: String): Case {
-    if (actual != expected) {
-        print("    FAIL: %s 不匹配\n", label);
-        print("      期望: <%s>\n", expected);
-        print("      实际: <%s>\n", actual);
-        c.failures = c.failures + 1;
+    pub fn expect_i32(&mut self, actual: i32, expected: i32, label: String) {
+        if (actual != expected) {
+            print("    FAIL: %s 期望 %d，实际 %d\n", label, expected, actual);
+            self.failures = self.failures + 1;
+        }
     }
-    return c;
-}
 
-pub fn expect_contains(c: Case, actual: String, expected: String, label: String): Case {
-    if (!actual.contains(expected)) {
-        print("    FAIL: %s 中找不到 <%s>，实际 <%s>\n", label, expected, actual);
-        c.failures = c.failures + 1;
+    pub fn expect_string(&mut self, actual: String, expected: String, label: String) {
+        if (actual != expected) {
+            print("    FAIL: %s 不匹配\n", label);
+            print("      期望: <%s>\n", expected);
+            print("      实际: <%s>\n", actual);
+            self.failures = self.failures + 1;
+        }
     }
-    return c;
-}
 
-pub fn finish(c: Case): i32 {
-    if (c.failures > 0) {
-        return 1;
+    pub fn expect_contains(&mut self, actual: String, expected: String, label: String) {
+        if (!actual.contains(expected)) {
+            print("    FAIL: %s 中找不到 <%s>，实际 <%s>\n", label, expected, actual);
+            self.failures = self.failures + 1;
+        }
     }
-    return 0;
+
+    // 0 表示全过，1 表示有失败 —— 直接当 main 的返回值。
+    pub fn finish(&self): i32 {
+        if (self.failures > 0) {
+            return 1;
+        }
+        return 0;
+    }
 }

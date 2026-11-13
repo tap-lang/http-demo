@@ -24,57 +24,57 @@ fn main(): i32 {
         + "X-Trace: abc\r\n\r\n";
     let request: Request = parse(raw);
 
-    c = lib.expect_string(c, request.method, "POST", "method");
-    c = lib.expect_string(c, request.path, "/api/users", "path 去掉 query");
-    c = lib.expect_string(c, request.query, "id=7", "query 保留原样");
-    c = lib.expect_string(c, request.version, "HTTP/1.1", "version（行尾的 CR 要被 trim 掉）");
-    c = lib.expect_string(c, request.target, "/api/users?id=7", "target 是原始目标");
+    c.expect_string(request.method, "POST", "method");
+    c.expect_string(request.path, "/api/users", "path 去掉 query");
+    c.expect_string(request.query, "id=7", "query 保留原样");
+    c.expect_string(request.version, "HTTP/1.1", "version（行尾的 CR 要被 trim 掉）");
+    c.expect_string(request.target, "/api/users?id=7", "target 是原始目标");
 
     // 头名大小写不敏感：客户端发 Host，查 host 也得命中
-    c = lib.expect_string(c, http.request_header(&request, "host"), "example.com", "头查询忽略大小写");
-    c = lib.expect_string(c, http.request_header(&request, "X-TRACE"), "abc", "头查询再验一次");
-    c = lib.expect_string(c, http.request_header(&request, "missing"), "", "缺失的头返回空串");
+    c.expect_string(request.header("host"), "example.com", "头查询忽略大小写");
+    c.expect_string(request.header("X-TRACE"), "abc", "头查询再验一次");
+    c.expect_string(request.header("missing"), "", "缺失的头返回空串");
 
     // ---- query ----
-    c = lib.expect_string(c, http.query_value(&request, "id"), "7", "query 取 id");
-    c = lib.expect_string(c, http.query_value(&request, "nope"), "", "query 取不存在的键");
+    c.expect_string(request.query_value("id"), "7", "query 取 id");
+    c.expect_string(request.query_value("nope"), "", "query 取不存在的键");
 
     let encoded: Request = parse("GET /s?q=http%20server%2Bmore&empty= HTTP/1.1\r\n\r\n");
-    c = lib.expect_string(c, http.query_value(&encoded, "q"), "http server+more", "query 值要解码");
-    c = lib.expect_string(c, http.query_value(&encoded, "empty"), "", "query 空值");
+    c.expect_string(encoded.query_value("q"), "http server+more", "query 值要解码");
+    c.expect_string(encoded.query_value("empty"), "", "query 空值");
 
     // ---- keep-alive 判定 ----
-    c = lib.expect_true(c, http.wants_keep_alive(&request), "HTTP/1.1 默认复用");
+    c.expect_true(request.wants_keep_alive(), "HTTP/1.1 默认复用");
     let closing: Request = parse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
-    c = lib.expect_true(c, !http.wants_keep_alive(&closing), "Connection: close 覆盖默认值");
+    c.expect_true(!closing.wants_keep_alive(), "Connection: close 覆盖默认值");
     let old: Request = parse("GET / HTTP/1.0\r\n\r\n");
-    c = lib.expect_true(c, !http.wants_keep_alive(&old), "HTTP/1.0 默认关闭");
+    c.expect_true(!old.wants_keep_alive(), "HTTP/1.0 默认关闭");
     let old_keep: Request = parse("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n");
-    c = lib.expect_true(c, http.wants_keep_alive(&old_keep), "HTTP/1.0 + keep-alive");
+    c.expect_true(old_keep.wants_keep_alive(), "HTTP/1.0 + keep-alive");
 
     // ---- 坏报文 ----
-    c = lib.expect_true(c, is_err(http.parse_head("GET")), "缺少目标和版本");
-    c = lib.expect_true(c, is_err(http.parse_head("GET / HTTP/1.1\r\nbad header\r\n\r\n")),
+    c.expect_true(is_err(http.parse_head("GET")), "缺少目标和版本");
+    c.expect_true(is_err(http.parse_head("GET / HTTP/1.1\r\nbad header\r\n\r\n")),
                         "头部没有冒号");
 
     // ---- 响应序列化 ----
     let response: Response = http.plain(200, "hi");
-    let wire: String = http.build_response(&response, false);
-    c = lib.expect_contains(c, wire, "HTTP/1.1 200 OK", "状态行");
-    c = lib.expect_contains(c, wire, "Content-Length: 2", "Content-Length 由 body 算出");
-    c = lib.expect_contains(c, wire, "Connection: close", "Connection");
-    c = lib.expect_contains(c, wire, "\r\n\r\nhi", "body 跟在空行后");
-    c = lib.expect_contains(c, wire, "Connection: close\r\n\r\nhi", "头部与 body 的分界");
+    let wire: String = response.build(false);
+    c.expect_contains(wire, "HTTP/1.1 200 OK", "状态行");
+    c.expect_contains(wire, "Content-Length: 2", "Content-Length 由 body 算出");
+    c.expect_contains(wire, "Connection: close", "Connection");
+    c.expect_contains(wire, "\r\n\r\nhi", "body 跟在空行后");
+    c.expect_contains(wire, "Connection: close\r\n\r\nhi", "头部与 body 的分界");
 
     // 204 不允许带 body，也不该写 Content-Length
     let no_content_response: Response = http.empty(204);
-    let no_content: String = http.build_response(&no_content_response, true);
-    c = lib.expect_contains(c, no_content, "HTTP/1.1 204 No Content", "204 状态行");
-    c = lib.expect_true(c, !no_content.contains("Content-Length"), "204 不带 Content-Length");
+    let no_content: String = no_content_response.build(true);
+    c.expect_contains(no_content, "HTTP/1.1 204 No Content", "204 状态行");
+    c.expect_true(!no_content.contains("Content-Length"), "204 不带 Content-Length");
 
-    c = lib.expect_string(c, http.status_text(404), "Not Found", "status_text 404");
-    c = lib.expect_string(c, http.status_text(405), "Method Not Allowed", "status_text 405");
-    c = lib.expect_string(c, http.status_text(599), "Unknown", "未知状态码");
+    c.expect_string(http.status_text(404), "Not Found", "status_text 404");
+    c.expect_string(http.status_text(405), "Method Not Allowed", "status_text 405");
+    c.expect_string(http.status_text(599), "Unknown", "未知状态码");
 
-    return lib.finish(c);
+    return c.finish();
 }

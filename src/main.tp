@@ -28,14 +28,14 @@ import server;
 fn main(): i32 {
     let app: Router = router.new();
 
-    router.get(&mut app, "/", &index);
-    router.get(&mut app, "/health", &health);
-    router.get(&mut app, "/hello/:name", &hello);
-    router.get(&mut app, "/users/:id", &show_user);
-    router.delete(&mut app, "/users/:id", &delete_user);
-    router.get(&mut app, "/search", &search);
-    router.post(&mut app, "/echo", &echo);
-    router.get(&mut app, "/old", &legacy_redirect);
+    app.get("/", &index);
+    app.get("/health", &health);
+    app.get("/hello/:name", &hello);
+    app.get("/users/:id", &show_user);
+    app.delete("/users/:id", &delete_user);
+    app.get("/search", &search);
+    app.post("/echo", &echo);
+    app.get("/old", &legacy_redirect);
 
     let host: String = env.var("HOST");
     if (host.len() == 0) {
@@ -72,37 +72,37 @@ fn index(request: &Request, response: &mut Response) {
         + "<li><code>POST /echo</code> 回显 body</li>"
         + "<li><code>GET /old</code> 302 到 /</li>"
         + "</ul>";
-    http.reply_html(response, 200, page);
+    response.reply_html(200, page);
 }
 
 fn health(request: &Request, response: &mut Response) {
     let body: String = "{\"status\":\"ok\",\"routes\":8}";
-    http.reply_json(response, 200, body);
+    response.reply_json(200, body);
 }
 
 // 路径参数示例。中文名走 URL 编码传进来（%E4%BD%A0%E5%A5%BD），
 // http.parse_head 已经把它解码了。
 fn hello(request: &Request, response: &mut Response) {
-    let name: String = http.request_param(request, "name");
+    let name: String = request.param("name");
     if (name.len() == 0) {
         name = "world";
     }
-    http.reply_plain(response, 200, "hello, " + name + "!\n");
+    response.reply_plain(200, "hello, " + name + "!\n");
 }
 
 // 同一个路径上的两种方法：GET 取数据，DELETE 删数据。
 fn show_user(request: &Request, response: &mut Response) {
-    let raw: String = http.request_param(request, "id");
+    let raw: String = request.param("id");
     let parsed: Result<i64, String> = parse.parse_i64(raw);
     if (is_err(parsed)) {
-        http.reply_json(response, 400, "{\"error\":\"id must be a number\"}");
+        response.reply_json(400, "{\"error\":\"id must be a number\"}");
         return;
     }
     let id: i64 = unwrap_or(parsed, 0);
     let body: String = "{\"id\":" + parse.format_i64(id)
         + ",\"name\":" + json.escape_quoted("user-" + parse.format_i64(id))
         + ",\"active\":true}";
-    http.reply_json(response, 200, body);
+    response.reply_json(200, body);
 }
 
 fn delete_user(request: &Request, response: &mut Response) {
@@ -111,23 +111,23 @@ fn delete_user(request: &Request, response: &mut Response) {
 
 // query 参数示例：值里可能有 %20 / +，取出来已经是解码后的。
 fn search(request: &Request, response: &mut Response) {
-    let query: String = http.query_value(request, "q");
+    let query: String = request.query_value("q");
     let body: String = "{\"query\":" + json.escape_quoted(query)
         + ",\"length\":" + parse.format_i64(query.len() as i64) + "}";
-    http.reply_json(response, 200, body);
+    response.reply_json(200, body);
 }
 
 // POST body：Content-Length 由 http 层负责收齐，这里只管读。
 fn echo(request: &Request, response: &mut Response) {
-    let content_type: String = http.request_header(request, "content-type");
+    let content_type: String = request.header("content-type");
     let body: String = "{\"method\":" + json.escape_quoted(request.method)
         + ",\"path\":" + json.escape_quoted(request.path)
         + ",\"content_type\":" + json.escape_quoted(content_type)
         + ",\"body\":" + json.escape_quoted(request.body) + "}";
-    http.reply_json(response, 200, body);
+    response.reply_json(200, body);
 }
 
 fn legacy_redirect(request: &Request, response: &mut Response) {
     response.status = 302;
-    http.set_header(response, "Location", "/");
+    response.set_header("Location", "/");
 }

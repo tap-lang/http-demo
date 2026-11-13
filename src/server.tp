@@ -32,7 +32,7 @@ pub fn serve(host: String, port: u16, app: Router, keep_alive: bool): i32 {
     // 日志一律走 stderr：stdout 是块缓冲的，重定向到文件或管道时要等缓冲区满才看得到，
     // 服务跑起来半天没输出会让人以为卡死了。stderr 按 C 标准默认不带全缓冲。
     io.eprintf("listening on http://%s:%d/  (%llu routes, keep-alive=%d, Ctrl-C to stop)\n",
-               host, actual as i32, router.count(&app), keep_alive);
+               host, actual as i32, app.count(), keep_alive);
 
     while (true) {
         let accepted: Result<Socket, String> = net.accept_from(server);
@@ -57,17 +57,17 @@ fn handle(client: Socket, app: &Router, allow_keep_alive: bool) {
     let open: bool = true;
 
     while (open) {
-        let outcome: ReadOutcome = http.read_request(&mut conn);
+        let outcome: ReadOutcome = conn.read_request();
         match (outcome) {
             ReadOutcome.Ready(incoming) => {
                 let request: Request = incoming;
-                let keep_alive: bool = allow_keep_alive && http.wants_keep_alive(&request);
+                let keep_alive: bool = allow_keep_alive && request.wants_keep_alive();
                 let response: Response = http.new_response(200);
 
-                router.dispatch(app, &mut request, &mut response);
+                app.dispatch(&mut request, &mut response);
 
                 io.eprintf("%s %s -> %d\n", request.method, request.target, response.status);
-                http.send_response(&mut conn, &response, keep_alive);
+                conn.send(&response, keep_alive);
                 open = keep_alive;
             }
             ReadOutcome.Closed => {
@@ -77,10 +77,10 @@ fn handle(client: Socket, app: &Router, allow_keep_alive: bool) {
                 // 报文本身坏了就没法继续复用连接：回一个 400 然后关掉。
                 io.eprintf("http: bad request: %s\n", reason);
                 let response: Response = http.plain(400, "400 Bad Request: " + reason + "\n");
-                http.send_response(&mut conn, &response, false);
+                conn.send(&response, false);
                 open = false;
             }
         }
     }
-    http.close(&mut conn);
+    conn.close();
 }

@@ -23,90 +23,99 @@ pub struct Route {
     handler: *fn(&Request, &mut Response),
 }
 
+impl Route {
+    // 这条路由的路径是否匹配；匹配时把 `:name` 的实参推进 params。
+    // 方法名挂在 Route 上，dispatch 读起来就是「这条路由匹配这个路径吗」。
+    pub fn matches(&self, path: String, params: &mut Vec<Header>): bool {
+        return match_path(self.pattern, path, params);
+    }
+}
+
 pub struct Router {
     routes: Vec<Route>,
 }
 
+// 空路由表。没有接收者，所以只能当模块函数调（`Router.new()` 这条语法还没有）。
 pub fn new(): Router {
     let routes: Vec<Route> = vec.new<Route>();
     return Router { routes: routes };
 }
 
-// 注册一条路由。method 传 "*" 表示任意方法。
-pub fn add(app: &mut Router, method: String, pattern: String,
-           handler: *fn(&Request, &mut Response)) {
-    let routes: Vec<Route> = app.routes;
-    routes.push(Route { method: method, pattern: pattern, handler: handler });
-    app.routes = routes;
-}
+impl Router {
+    // 注册一条路由。method 传 "*" 表示任意方法。
+    pub fn add(&mut self, method: String, pattern: String,
+               handler: *fn(&Request, &mut Response)) {
+        let routes: Vec<Route> = self.routes;
+        routes.push(Route { method: method, pattern: pattern, handler: handler });
+        self.routes = routes;
+    }
 
-pub fn get(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
-    add(app, "GET", pattern, handler);
-}
+    pub fn get(&mut self, pattern: String, handler: *fn(&Request, &mut Response)) {
+        self.add("GET", pattern, handler);
+    }
 
-pub fn post(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
-    add(app, "POST", pattern, handler);
-}
+    pub fn post(&mut self, pattern: String, handler: *fn(&Request, &mut Response)) {
+        self.add("POST", pattern, handler);
+    }
 
-pub fn put(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
-    add(app, "PUT", pattern, handler);
-}
+    pub fn put(&mut self, pattern: String, handler: *fn(&Request, &mut Response)) {
+        self.add("PUT", pattern, handler);
+    }
 
-pub fn delete(app: &mut Router, pattern: String, handler: *fn(&Request, &mut Response)) {
-    add(app, "DELETE", pattern, handler);
-}
+    pub fn delete(&mut self, pattern: String, handler: *fn(&Request, &mut Response)) {
+        self.add("DELETE", pattern, handler);
+    }
 
-// 注册了多少条路由。
-pub fn count(app: &Router): uint {
-    let routes: Vec<Route> = app.routes;
-    return routes.len();
-}
+    // 注册了多少条路由。
+    pub fn count(&self): uint {
+        let routes: Vec<Route> = self.routes;
+        return routes.len();
+    }
 
-// 找出第一条匹配的路由并调用处理函数；都不匹配时写 404 / 405。
-//
-// 405 只在「路径能匹配、方法不行」时给出，并带上 Allow 头 —— 这是 RFC 7231 的要求，
-// 也让调用方能一眼看出是拼错了方法还是拼错了路径。
-pub fn dispatch(app: &Router, request: &mut Request, response: &mut Response) {
-    let routes: Vec<Route> = app.routes;
-    let path_matched: bool = false;
-    let allowed: Vec<String> = vec.new<String>();
+    // 找出第一条匹配的路由并调用处理函数；都不匹配时写 404 / 405。
+    //
+    // 405 只在「路径能匹配、方法不行」时给出，并带上 Allow 头 —— 这是 RFC 7231 的要求，
+    // 也让调用方能一眼看出是拼错了方法还是拼错了路径。
+    pub fn dispatch(&self, request: &mut Request, response: &mut Response) {
+        let routes: Vec<Route> = self.routes;
+        let path_matched: bool = false;
+        let allowed: Vec<String> = vec.new<String>();
 
-    for (let i: uint = 0; i < routes.len(); i = i + 1) {
-        let route: Route = routes.get(i);
-        let params: Vec<Header> = vec.new<Header>();
-        if (!match_path(route.pattern, request.path, &mut params)) {
-            vec.free(params);
-            continue;
+        for (let i: uint = 0; i < routes.len(); i = i + 1) {
+            let route: Route = routes.get(i);
+            let params: Vec<Header> = vec.new<Header>();
+            if (!route.matches(request.path, &mut params)) {
+                vec.free(params);
+                continue;
+            }
+            if (route.method != "*" && !text.equals_ignore_case(route.method, request.method)) {
+                path_matched = true;
+                allowed.push(route.method);
+                vec.free(params);
+                continue;
+            }
+
+            request.params = params;
+            let handler: *fn(&Request, &mut Response) = route.handler;
+            handler(request, response);
+            vec.free(allowed);
+            return;
         }
-        if (route.method != "*" && !text.equals_ignore_case(route.method, request.method)) {
-            path_matched = true;
-            allowed.push(route.method);
-            vec.free(params);
-            continue;
-        }
 
-        request.params = params;
-        let handler: *fn(&Request, &mut Response) = route.handler;
-        handler(request, response);
+        if (path_matched) {
+            let allow: String = join(allowed);
+            response.set_header("Allow", allow);
+            response.reply_plain(405, "405 Method Not Allowed\n");
+        } else {
+            response.reply_plain(404, "404 Not Found\n");
+        }
         vec.free(allowed);
-        return;
     }
-
-    if (path_matched) {
-        let allow: String = join(allowed);
-        response.status = 405;
-        response.body = "405 Method Not Allowed\n";
-        http.set_header(response, "Allow", allow);
-        http.set_header(response, "Content-Type", "text/plain; charset=utf-8");
-    } else {
-        response.status = 404;
-        response.body = "404 Not Found\n";
-        http.set_header(response, "Content-Type", "text/plain; charset=utf-8");
-    }
-    vec.free(allowed);
 }
 
 // 模式与路径是否匹配；匹配时把 `:name` 的实参推进 params。
+//
+// 纯函数，两个输入都是 String，挂在哪个类型上都不自然，所以留作模块函数。
 pub fn match_path(pattern: String, path: String, params: &mut Vec<Header>): bool {
     let pattern_parts: Vec<String> = text.split(pattern, 47);      // '/'
     let path_parts: Vec<String> = text.split(path, 47);

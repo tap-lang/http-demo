@@ -39,35 +39,46 @@ curl -i -X DELETE http://127.0.0.1:8080/users/42
 
 ```tap
 fn hello(request: &Request, response: &mut Response) {
-    let name: String = http.request_param(request, "name");
-    http.reply_plain(response, 200, "hello, " + name + "!\n");
+    let name: String = request.param("name");
+    response.reply_plain(200, "hello, " + name + "!\n");
 }
 
 fn main(): i32 {
     let app: Router = router.new();
-    router.get(&mut app, "/hello/:name", &hello);
+    app.get("/hello/:name", &hello);
     return server.serve("127.0.0.1", 8080, app, false);
 }
 ```
 
-- `:name` 是参数段，匹配到的值进 `request.params`，用 `http.request_param` 取
+- `:name` 是参数段，匹配到的值进 `request.params`，用 `request.param("name")` 取
 - `*` 作为方法名表示「任意方法」
 - 路径能匹配但方法不行 → **405 + `Allow` 头**；路径也不匹配 → **404**
 
 ## 报文层的 API
 
 ```tap
-http.request_header(&request, "content-type")   // 头，大小写不敏感
-http.response_header(&response, "allow")        // 响应头
-http.query_value(&request, "q")                 // query 参数，值已 URL 解码
-http.request_param(&request, "id")              // 路由参数
+request.header("content-type")     // 头，大小写不敏感
+request.param("id")                // 路由参数
+request.query_value("q")           // query 参数，值已 URL 解码
+request.wants_keep_alive()         // 这条连接要不要复用
 
-http.reply_plain(&mut response, 200, "ok")      // 就地填 status / Content-Type / body
-http.reply_html(...)   http.reply_json(...)
-http.new_response(200)  http.set_header(...)  http.plain(404, "...")  http.redirect("/")
+response.header("allow")           // 响应头
+response.set_header("Location", "/")
+response.reply_plain(200, "ok")    // 就地填 status / Content-Type / body
+response.reply_html(...)   response.reply_json(...)
+response.build(keep_alive)         // 序列化成线上字节
+
+conn.read_request()                // 读一个完整请求 → ReadOutcome
+conn.send(&response, keep_alive)   // 写回去，处理「一次发不完」
+conn.close()
+
+// 没有接收者的构造入口仍是模块函数（tap 还不支持 Response.new()）
+http.new_response(200)  http.plain(404, "...")  http.html(...)
+http.json_response(...)  http.redirect("/")  http.empty(204)
+http.parse_head(head)   http.connect(socket)   http.status_text(404)
 ```
 
-`Content-Length` 一律由 `build_response` 按 body 长度算，调用方不用也不能自己写。
+`Content-Length` 一律由 `response.build()` 按 body 长度算，调用方不用也不能自己写。
 204 / 304 不写 `Content-Length` 也不发 body（RFC 7230 §3.3.2）。
 
 ## 测试
@@ -96,5 +107,9 @@ tapm test        # 或 TAPM=/path/to/tapm TAP=/path/to/tap tapm test
   `KEEP_ALIVE=1` 启动，代价是并发客户端会互相排队。
 - **没有并发**。一次处理一个连接，慢请求会挡住后面所有人。要做并发得先给 `std.net`
   加非阻塞 + 事件循环，不是在这里堆线程。
-- **处理函数是函数指针，调用点只认标识符**。`route.handler(...)` 调不了，要先
-  `let h: *fn(&Request, &mut Response) = route.handler; h(...)`。
+- **存进结构体的函数指针不能直接调**。`route.handler(req, res)` 编不过，要先
+  `let h: *fn(&Request, &mut Response) = route.handler; h(req, res)`。
+  字段类型是函数指针时，调用点只认标识符，不认字段访问。
+- **没有接收者的关联函数调不了**。`impl Response` 里写 `fn new(...)` 也白写 ——
+  `Response.new()` 这条语法还不存在，构造器只能当模块函数（`http.new_response`）。
+  所以 impl 里只放带 `self` 的方法。

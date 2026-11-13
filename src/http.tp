@@ -7,6 +7,10 @@
 // 支持的子集：请求行 + 头部 + 按 Content-Length 计的 body；响应同理。
 // **不支持** chunked、100-continue、gzip、multipart —— 每一个都要额外的状态机，
 // 对「简单框架」来说是负担，真需要时再往上加。
+//
+// 三个类型各自带 impl：Request / Response 的读写都走方法，Connection 的读循环同理。
+// 没有接收者的构造函数（new_response / plain / connect / parse_head）仍是模块函数 ——
+// tap 还不支持 `Response.new()` 这种关联函数调用。
 
 import std.vec as vec;
 import std.vec.Vec;
@@ -64,85 +68,90 @@ pub enum ReadOutcome {
 // 请求
 // ---------------------------------------------------------------------------
 
-// 按名字取头，大小写不敏感；没有返回空串。
-pub fn request_header(request: &Request, name: String): String {
-    let headers: Vec<Header> = request.headers;
-    let found: String = "";
-    for (let i: uint = 0; i < headers.len(); i = i + 1) {
-        let header: Header = headers.get(i);
-        if (text.equals_ignore_case(header.name, name)) {
-            found = header.value;
-            return found;
+impl Request {
+    // 按名字取头，大小写不敏感；没有返回空串。
+    pub fn header(&self, name: String): String {
+        let headers: Vec<Header> = self.headers;
+        for (let i: uint = 0; i < headers.len(); i = i + 1) {
+            let header: Header = headers.get(i);
+            if (text.equals_ignore_case(header.name, name)) {
+                return header.value;
+            }
         }
+        return "";
     }
-    return found;
-}
 
-// 按名字取**响应**头（同样大小写不敏感）。用例要断言 405 的 Allow 头时就靠它。
-pub fn response_header(response: &Response, name: String): String {
-    let headers: Vec<Header> = response.headers;
-    for (let i: uint = 0; i < headers.len(); i = i + 1) {
-        let header: Header = headers.get(i);
-        if (text.equals_ignore_case(header.name, name)) {
-            return header.value;
+    // 按名字取路由参数（`/users/:id` 里的 id）；没有返回空串。
+    pub fn param(&self, name: String): String {
+        let params: Vec<Header> = self.params;
+        for (let i: uint = 0; i < params.len(); i = i + 1) {
+            let param: Header = params.get(i);
+            if (param.name == name) {
+                return param.value;
+            }
         }
+        return "";
     }
-    return "";
-}
 
-// 按名字取路由参数（`/users/:id` 里的 id）；没有返回空串。
-pub fn request_param(request: &Request, name: String): String {
-    let params: Vec<Header> = request.params;
-    for (let i: uint = 0; i < params.len(); i = i + 1) {
-        let param: Header = params.get(i);
-        if (param.name == name) {
-            return param.value;
+    // 取 query 参数，值做 URL 解码；没有返回空串。
+    pub fn query_value(&self, name: String): String {
+        let pairs: Vec<String> = text.split(self.query, 38);     // '&'
+        let found: String = "";
+        for (let i: uint = 0; i < pairs.len(); i = i + 1) {
+            let pair: String = pairs.get(i);
+            if (pair.len() == 0) {
+                continue;
+            }
+            let mark: i64 = text.find(pair, "=", 0);
+            let key: String = pair;
+            let value: String = "";
+            if (mark >= 0) {
+                key = pair.slice(0, mark as uint);
+                value = pair.slice(mark as uint + 1, pair.len());
+            }
+            if (text.decode(key) == name) {
+                found = text.decode(value);
+                break;
+            }
         }
+        vec.free(pairs);
+        return found;
     }
-    return "";
-}
 
-// 取 query 参数，值做 URL 解码；没有返回空串。
-pub fn query_value(request: &Request, name: String): String {
-    let pairs: Vec<String> = text.split(request.query, 38);      // '&'
-    let found: String = "";
-    for (let i: uint = 0; i < pairs.len(); i = i + 1) {
-        let pair: String = pairs.get(i);
-        if (pair.len() == 0) {
-            continue;
+    // 这条连接还用不用继续复用。HTTP/1.1 默认复用，HTTP/1.0 默认关；
+    // 两边的 `Connection:` 头都能覆盖默认值。
+    pub fn wants_keep_alive(&self): bool {
+        let raw: String = self.header("connection");
+        let tokens: Vec<String> = text.split(raw, 44);               // ','
+        let decision: bool = self.version == "HTTP/1.1";
+        for (let i: uint = 0; i < tokens.len(); i = i + 1) {
+            let token: String = text.trim(tokens.get(i));
+            if (text.equals_ignore_case(token, "close")) {
+                decision = false;
+            } else if (text.equals_ignore_case(token, "keep-alive")) {
+                decision = true;
+            }
         }
-        let mark: i64 = text.find(pair, "=", 0);
-        let key: String = pair;
-        let value: String = "";
-        if (mark >= 0) {
-            key = pair.slice(0, mark as uint);
-            value = pair.slice(mark as uint + 1, pair.len());
-        }
-        if (text.decode(key) == name) {
-            found = text.decode(value);
-            break;
-        }
+        vec.free(tokens);
+        return decision;
     }
-    vec.free(pairs);
-    return found;
-}
 
-// 这条连接还用不用继续复用。HTTP/1.1 默认复用，HTTP/1.0 默认关；
-// 两边的 `Connection:` 头都能覆盖默认值。
-pub fn wants_keep_alive(request: &Request): bool {
-    let raw: String = request_header(request, "connection");
-    let tokens: Vec<String> = text.split(raw, 44);               // ','
-    let decision: bool = request.version == "HTTP/1.1";
-    for (let i: uint = 0; i < tokens.len(); i = i + 1) {
-        let token: String = text.trim(tokens.get(i));
-        if (text.equals_ignore_case(token, "close")) {
-            decision = false;
-        } else if (text.equals_ignore_case(token, "keep-alive")) {
-            decision = true;
+    // Content-Length 的值；没有这个头算 0，值非法返回 -1。
+    fn content_length(&self): i64 {
+        let raw: String = self.header("content-length");
+        if (raw.len() == 0) {
+            return 0;
         }
+        let parsed: Result<i64, String> = parse.parse_i64(raw);
+        if (is_err(parsed)) {
+            return -1;
+        }
+        let value: i64 = unwrap_or(parsed, -1);
+        if (value < 0) {
+            return -1;
+        }
+        return value;
     }
-    vec.free(tokens);
-    return decision;
 }
 
 // 空的 Request，只给「已经判过 is_err、接下来必定成功」的分支当兜底值用。
@@ -172,25 +181,107 @@ pub fn error_text<T>(value: Result<T, String>): String {
 // 响应
 // ---------------------------------------------------------------------------
 
+impl Response {
+    // 按名字取头（大小写不敏感）。用例要断言 405 的 Allow 头时就靠它。
+    pub fn header(&self, name: String): String {
+        let headers: Vec<Header> = self.headers;
+        for (let i: uint = 0; i < headers.len(); i = i + 1) {
+            let header: Header = headers.get(i);
+            if (text.equals_ignore_case(header.name, name)) {
+                return header.value;
+            }
+        }
+        return "";
+    }
+
+    // 加一条响应头。
+    //
+    // Vec 是值语义，直接 `self.headers.push(x)` 改的是副本的 len（缓冲区倒是共享的），
+    // 所以必须「取出来、改、写回去」。
+    pub fn set_header(&mut self, name: String, value: String) {
+        let headers: Vec<Header> = self.headers;
+        headers.push(Header { name: name, value: value });
+        self.headers = headers;
+    }
+
+    // 把「状态码 + Content-Type + body」一次性写进自己。
+    //
+    // 处理函数拿到的是 `&mut Response`，没有返回值，所以需要这一组「就地填充」的入口。
+    // 每个处理函数只该调其中一个 —— 调两次会多出一份 Content-Type 头。
+    pub fn reply_plain(&mut self, status: i32, body: String) {
+        self.status = status;
+        self.body = body;
+        self.set_header("Content-Type", "text/plain; charset=utf-8");
+    }
+
+    pub fn reply_html(&mut self, status: i32, body: String) {
+        self.status = status;
+        self.body = body;
+        self.set_header("Content-Type", "text/html; charset=utf-8");
+    }
+
+    pub fn reply_json(&mut self, status: i32, body: String) {
+        self.status = status;
+        self.body = body;
+        self.set_header("Content-Type", "application/json; charset=utf-8");
+    }
+
+    // 把 Response 序列化成线上字节。
+    //
+    // Content-Length 一律由这里算，调用方不用（也不能）自己写：body 的长度是唯一的真相，
+    // 让上层再填一遍只会写出人不一致的值。
+    pub fn build(&self, keep_alive: bool): String {
+        // 每段之间都夹一个 CRLF，头部与 body 之间再补一个空行。
+        let builder: StringBuilder = sb.new();
+        builder.append("HTTP/1.1 ");
+        builder.append(parse.format_i64(self.status as i64));
+        builder.append(" ");
+        builder.append(status_text(self.status));
+        builder.append("\r\n");
+
+        let headers: Vec<Header> = self.headers;
+        for (let i: uint = 0; i < headers.len(); i = i + 1) {
+            let header: Header = headers.get(i);
+            builder.append(header.name);
+            builder.append(": ");
+            builder.append(header.value);
+            builder.append("\r\n");
+        }
+
+        // 204 / 304 不允许带 body，长度也就不能写 Content-Length（RFC 7230 §3.3.2）。
+        let bodyless: bool = self.status == 204 || self.status == 304;
+        if (!bodyless) {
+            builder.append("Content-Length: ");
+            builder.append(parse.format_i64(self.body.len() as i64));
+            builder.append("\r\n");
+        }
+        builder.append("Connection: ");
+        if (keep_alive) {
+            builder.append("keep-alive");
+        } else {
+            builder.append("close");
+        }
+        builder.append("\r\n");
+        builder.append("\r\n");
+        if (!bodyless) {
+            builder.append(self.body);
+        }
+
+        let payload: String = builder.to_string();
+        builder.free();
+        return payload;
+    }
+}
+
 pub fn new_response(status: i32): Response {
     let headers: Vec<Header> = vec.new<Header>();
     return Response { status: status, headers: headers, body: "" };
 }
 
-// 加一条响应头。
-//
-// Vec 是值语义，直接 `response.headers.push(x)` 改的是副本的 len（缓冲区倒是共享的），
-// 所以必须「取出来、改、写回去」。
-pub fn set_header(response: &mut Response, name: String, value: String) {
-    let headers: Vec<Header> = response.headers;
-    headers.push(Header { name: name, value: value });
-    response.headers = headers;
-}
-
 pub fn body_response(status: i32, content_type: String, body: String): Response {
     let response: Response = new_response(status);
     response.body = body;
-    set_header(&mut response, "Content-Type", content_type);
+    response.set_header("Content-Type", content_type);
     return response;
 }
 
@@ -210,35 +301,13 @@ pub fn json_response(status: i32, body: String): Response {
 // 302 跳转。
 pub fn redirect(location: String): Response {
     let response: Response = new_response(302);
-    set_header(&mut response, "Location", location);
+    response.set_header("Location", location);
     return response;
 }
 
 // 无 body 的响应（204 / 304）。
 pub fn empty(status: i32): Response {
     return new_response(status);
-}
-
-// 把「状态码 + Content-Type + body」一次性写进调用方给的 response。
-//
-// 处理函数拿到的是 `&mut Response`，没有返回值，所以需要这一组「就地填充」的入口。
-// 每个处理函数只该调其中一个 —— 调两次会多出一份 Content-Type 头。
-pub fn reply_plain(response: &mut Response, status: i32, body: String) {
-    response.status = status;
-    response.body = body;
-    set_header(response, "Content-Type", "text/plain; charset=utf-8");
-}
-
-pub fn reply_html(response: &mut Response, status: i32, body: String) {
-    response.status = status;
-    response.body = body;
-    set_header(response, "Content-Type", "text/html; charset=utf-8");
-}
-
-pub fn reply_json(response: &mut Response, status: i32, body: String) {
-    response.status = status;
-    response.body = body;
-    set_header(response, "Content-Type", "application/json; charset=utf-8");
 }
 
 // 状态码对应的原因短语。只列这个框架会真正用到的，其余落到 "Unknown"。
@@ -266,52 +335,6 @@ pub fn status_text(status: i32): String {
     if (status == 501) { return "Not Implemented"; }
     if (status == 503) { return "Service Unavailable"; }
     return "Unknown";
-}
-
-// 把 Response 序列化成线上字节。
-//
-// Content-Length 一律由这里算，调用方不用（也不能）自己写：body 的长度是唯一的真相，
-// 让上层再填一遍只会写出人不一致的值。
-pub fn build_response(response: &Response, keep_alive: bool): String {
-    // 每段之间都夹一个 CRLF，头部与 body 之间再补一个空行。
-    let builder: StringBuilder = sb.new();
-    builder.append("HTTP/1.1 ");
-    builder.append(parse.format_i64(response.status as i64));
-    builder.append(" ");
-    builder.append(status_text(response.status));
-    builder.append("\r\n");
-
-    let headers: Vec<Header> = response.headers;
-    for (let i: uint = 0; i < headers.len(); i = i + 1) {
-        let header: Header = headers.get(i);
-        builder.append(header.name);
-        builder.append(": ");
-        builder.append(header.value);
-        builder.append("\r\n");
-    }
-
-    // 204 / 304 不允许带 body，长度也就不能写 Content-Length（RFC 7230 §3.3.2）。
-    let bodyless: bool = response.status == 204 || response.status == 304;
-    if (!bodyless) {
-        builder.append("Content-Length: ");
-        builder.append(parse.format_i64(response.body.len() as i64));
-        builder.append("\r\n");
-    }
-    builder.append("Connection: ");
-    if (keep_alive) {
-        builder.append("keep-alive");
-    } else {
-        builder.append("close");
-    }
-    builder.append("\r\n");
-    builder.append("\r\n");
-    if (!bodyless) {
-        builder.append(response.body);
-    }
-
-    let payload: String = builder.to_string();
-    builder.free();
-    return payload;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,61 +366,84 @@ fn read_chunk(socket: Socket): Result<String, String> {
     return Result<String, String>.Ok(chunk);
 }
 
-// 从 conn 里读一个完整请求。没有新请求时阻塞在 socket 上。
-pub fn read_request(conn: &mut Connection): ReadOutcome {
-    // 1. 先把头部收齐（到空行为止）。
-    let terminator: String = "\r\n\r\n";
-    let head_end: i64 = text.find(conn.pending, terminator, 0);
-    while (head_end < 0) {
-        if (conn.pending.len() > MAX_HEADER_BYTES) {
-            return ReadOutcome.Failed("request header is larger than 16 KiB");
-        }
-        let chunk: Result<String, String> = read_chunk(conn.socket);
-        if (is_err(chunk)) {
-            return ReadOutcome.Failed(error_text(chunk));
-        }
-        let piece: String = unwrap_or(chunk, "");
-        if (piece.len() == 0) {
-            // 对端关了。手里没攒下半个请求才算正常关闭 —— 否则就是被截断的报文。
-            if (conn.pending.len() == 0) {
-                return ReadOutcome.Closed;
+impl Connection {
+    // 读一个完整请求。没有新请求时阻塞在 socket 上。
+    pub fn read_request(&mut self): ReadOutcome {
+        // 1. 先把头部收齐（到空行为止）。
+        let terminator: String = "\r\n\r\n";
+        let head_end: i64 = text.find(self.pending, terminator, 0);
+        while (head_end < 0) {
+            if (self.pending.len() > MAX_HEADER_BYTES) {
+                return ReadOutcome.Failed("request header is larger than 16 KiB");
             }
-            return ReadOutcome.Failed("connection closed in the middle of a request");
+            let chunk: Result<String, String> = read_chunk(self.socket);
+            if (is_err(chunk)) {
+                return ReadOutcome.Failed(error_text(chunk));
+            }
+            let piece: String = unwrap_or(chunk, "");
+            if (piece.len() == 0) {
+                // 对端关了。手里没攒下半个请求才算正常关闭 —— 否则就是被截断的报文。
+                if (self.pending.len() == 0) {
+                    return ReadOutcome.Closed;
+                }
+                return ReadOutcome.Failed("connection closed in the middle of a request");
+            }
+            self.pending = self.pending + piece;
+            head_end = text.find(self.pending, terminator, 0);
         }
-        conn.pending = conn.pending + piece;
-        head_end = text.find(conn.pending, terminator, 0);
+
+        // 2. 解析请求行和头部。
+        let parsed: Result<Request, String> = parse_head(self.pending.slice(0, head_end as uint));
+        if (is_err(parsed)) {
+            return ReadOutcome.Failed(error_text(parsed));
+        }
+        let request: Request = unwrap_or(parsed, empty_request());
+
+        // 3. 按 Content-Length 把 body 收齐。head_end 之后 4 字节是空行。
+        let head_length: uint = head_end as uint + 4;
+        let wanted: i64 = request.content_length();
+        if (wanted < 0) {
+            return ReadOutcome.Failed("invalid Content-Length header");
+        }
+        let total: uint = head_length + wanted as uint;
+        while (self.pending.len() < total) {
+            let chunk: Result<String, String> = read_chunk(self.socket);
+            if (is_err(chunk)) {
+                return ReadOutcome.Failed(error_text(chunk));
+            }
+            let piece: String = unwrap_or(chunk, "");
+            if (piece.len() == 0) {
+                return ReadOutcome.Failed("connection closed in the middle of a body");
+            }
+            self.pending = self.pending + piece;
+        }
+
+        // 4. 切走这一个请求，剩下的（流水线里的下一个）留在 pending。
+        request.body = self.pending.slice(head_length, total);
+        self.pending = self.pending.slice(total, self.pending.len());
+        return ReadOutcome.Ready(request);
     }
 
-    // 2. 解析请求行和头部。
-    let parsed: Result<Request, String> = parse_head(conn.pending.slice(0, head_end as uint));
-    if (is_err(parsed)) {
-        return ReadOutcome.Failed(error_text(parsed));
-    }
-    let request: Request = unwrap_or(parsed, empty_request());
-
-    // 3. 按 Content-Length 把 body 收齐。head_end 之后 4 字节是空行。
-    let head_length: uint = head_end as uint + 4;
-    let wanted: i64 = content_length(&request);
-    if (wanted < 0) {
-        return ReadOutcome.Failed("invalid Content-Length header");
-    }
-    let total: uint = head_length + wanted as uint;
-    while (conn.pending.len() < total) {
-        let chunk: Result<String, String> = read_chunk(conn.socket);
-        if (is_err(chunk)) {
-            return ReadOutcome.Failed(error_text(chunk));
+    // 把响应写回去，处理「一次 send 发不完」。返回 0 成功，-1 对端已断。
+    pub fn send(&mut self, response: &Response, keep_alive: bool): i32 {
+        let payload: String = response.build(keep_alive);
+        let total: uint = payload.len();
+        let sent: i64 = 0;
+        while (sent < total as i64) {
+            let count: i64 = net.send_text(self.socket, payload.slice(sent as uint, total));
+            if (count <= 0) {
+                return -1;
+            }
+            sent = sent + count;
         }
-        let piece: String = unwrap_or(chunk, "");
-        if (piece.len() == 0) {
-            return ReadOutcome.Failed("connection closed in the middle of a body");
-        }
-        conn.pending = conn.pending + piece;
+        return 0;
     }
 
-    // 4. 切走这一个请求，剩下的（流水线里的下一个）留在 pending。
-    request.body = conn.pending.slice(head_length, total);
-    conn.pending = conn.pending.slice(total, conn.pending.len());
-    return ReadOutcome.Ready(request);
+    // 关掉连接。Socket 是值类型，close 的效果只走返回值，所以这里负责把副本也丢掉。
+    pub fn close(&mut self): i32 {
+        self.socket = net.close_socket(self.socket);
+        return 0;
+    }
 }
 
 // 只解析头部块（不含空行和 body），给 read_request 和测试共用。
@@ -457,42 +503,4 @@ pub fn parse_head(head: String): Result<Request, String> {
         params: params,
         body: "",
     });
-}
-
-// Content-Length 的值；没有这个头算 0，值非法返回 -1。
-fn content_length(request: &Request): i64 {
-    let raw: String = request_header(request, "content-length");
-    if (raw.len() == 0) {
-        return 0;
-    }
-    let parsed: Result<i64, String> = parse.parse_i64(raw);
-    if (is_err(parsed)) {
-        return -1;
-    }
-    let value: i64 = unwrap_or(parsed, -1);
-    if (value < 0) {
-        return -1;
-    }
-    return value;
-}
-
-// 把响应写回去，处理「一次 send 发不完」。返回 0 成功，-1 对端已断。
-pub fn send_response(conn: &mut Connection, response: &Response, keep_alive: bool): i32 {
-    let payload: String = build_response(response, keep_alive);
-    let total: uint = payload.len();
-    let sent: i64 = 0;
-    while (sent < total as i64) {
-        let count: i64 = net.send_text(conn.socket, payload.slice(sent as uint, total));
-        if (count <= 0) {
-            return -1;
-        }
-        sent = sent + count;
-    }
-    return 0;
-}
-
-// 关掉连接。Socket 是值类型，close 的效果只走返回值，所以这里负责把副本也丢掉。
-pub fn close(conn: &mut Connection): i32 {
-    conn.socket = net.close_socket(conn.socket);
-    return 0;
 }
